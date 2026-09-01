@@ -23,8 +23,8 @@ def parse_args() -> argparse.Namespace:
         description="NLM super-resolution upsampling (Manjon 2010)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("input",  type=Path, help="Input MINC2 file (.mnc)")
-    p.add_argument("output", type=Path, help="Output MINC2 file (.mnc)")
+    p.add_argument("input",  type=Path, help="Input volume (.mnc, .nii, .nii.gz)")
+    p.add_argument("output", type=Path, help="Output volume (.mnc, .nii, .nii.gz)")
     p.add_argument(
         "--factors",
         nargs=3,
@@ -77,15 +77,11 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
     )
 
-    # Import here so missing MINC library gives a clear error at runtime.
+    # Import here so a missing I/O backend gives a clear error at runtime.
     try:
-        from minc2_simple import minc2_error  # noqa: F401
-        from minc.io import format_history, load_minc_volume, save_minc_volume
+        from sr.minc.io import format_history, load_volume, save_volume
     except ImportError as exc:
-        sys.exit(
-            f"minc2_simple not available — install minc-toolkit and "
-            f"the minc2_simple Python package.\n({exc})"
-        )
+        sys.exit(f"Could not import I/O helpers: {exc}")
 
     from sr.core import nlm_upsample
 
@@ -94,14 +90,14 @@ def main() -> None:
 
     logging.getLogger().info("Loading %s", args.input)
     try:
-        data, v2w = load_minc_volume(str(args.input))
+        data, v2w = load_volume(str(args.input))
     except Exception as exc:
         sys.exit(f"Failed to load {args.input}: {exc}")
 
     if isinstance(data, np.ndarray):
         vol = data.astype(np.float64)
     else:
-        # torch.Tensor from load_minc_volume
+        # torch.Tensor from load_volume
         vol = data.numpy().astype(np.float64)
 
     logging.getLogger().info(
@@ -119,7 +115,7 @@ def main() -> None:
 
     logging.getLogger().info("Saving %s", args.output)
     try:
-        save_minc_volume(
+        save_volume(
             str(args.output),
             hr,
             v2w_hr,

@@ -2,6 +2,9 @@ __pycache__
 *.pyc
 *.so
 *.o
+
+# CFFI-generated intermediate C (from upsample/sr/_nlm_build.py)
+/upsample/sr/_nlm_core.c
 *.egg-info
 *.mnc
 !upsample/tests/data/*.mnc

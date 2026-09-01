@@ -2,9 +2,32 @@ from time import gmtime, strftime
 
 import numpy as np
 
-from minc2_simple import minc2_file, minc2_xfm, minc2_dim, minc2_error
+try:
+    from minc2_simple import minc2_file, minc2_xfm, minc2_dim, minc2_error
+    _HAVE_MINC2 = True
+except ImportError:
+    _HAVE_MINC2 = False
 
 from .geo import decompose, compose
+
+#: Recognised NIfTI filename suffixes (checked case-insensitively).
+_NIFTI_SUFFIXES = (".nii", ".nii.gz")
+#: Recognised MINC2 filename suffix.
+_MINC_SUFFIX = ".mnc"
+
+
+def _require_minc2():
+    """Raise a clear error if ``minc2_simple`` isn't installed.
+
+    Called at the top of every function below that touches ``minc2_file``,
+    ``minc2_xfm``, ``minc2_dim`` or ``minc2_error`` -- importing this module
+    must succeed without ``minc2_simple`` installed; only actually reading
+    or writing a MINC file should fail.
+    """
+    if not _HAVE_MINC2:
+        raise ImportError(
+            "MINC2 I/O requires 'minc2_simple'; install it, e.g. "
+            "pip install -e minc2-simple/python/")
 
 
 def format_history(argv):
@@ -15,6 +38,7 @@ def format_history(argv):
 
 def hdr_to_affine(hdr):
     """Convert MINC dimension headers to a 4×4 voxel-to-world affine matrix."""
+    _require_minc2()
     rot    = np.zeros((3, 3))
     scales = np.zeros((3, 3))
     start  = np.zeros(3)
@@ -40,6 +64,7 @@ def hdr_to_affine(hdr):
 
 def affine_to_dims(aff, shape):
     """Convert a 4×4 affine matrix to a MINC dimension list."""
+    _require_minc2()
     start, step, dir_cos = decompose(aff)
     if len(shape) == 3:
         dims = [
@@ -63,6 +88,7 @@ def affine_to_dims(aff, shape):
 
 def load_minc_volume(fname, as_byte=False):
     """Load a MINC volume and return (data_tensor, voxel_to_world_matrix)."""
+    _require_minc2()
     mm = minc2_file(fname)
     mm.setup_standard_order()
     d   = mm.load_complete_volume_tensor(
@@ -74,6 +100,7 @@ def load_minc_volume(fname, as_byte=False):
 
 def load_minc_volume_np(fname, as_byte=False, dtype=None):
     """Load a MINC volume into a numpy array and return (data, voxel_to_world_matrix)."""
+    _require_minc2()
     mm = minc2_file(fname)
     mm.setup_standard_order()
     if as_byte:
@@ -88,6 +115,7 @@ def load_minc_volume_np(fname, as_byte=False, dtype=None):
 
 def save_minc_volume(fn, data, aff, ref_fname=None, history=None):
     """Save a numpy array or tensor as a MINC file."""
+    _require_minc2()
     dims = affine_to_dims(aff, data.shape)
     out  = minc2_file()
     if data.dtype == np.uint8:
@@ -161,6 +189,7 @@ def uniformize_volume(data, v2w, tolerance=0.1, order=1, step=1.0):
 
 def load_nl_xfm(fn):
     """Load a non-linear-only transform from a .xfm file."""
+    _require_minc2()
     x = minc2_xfm(fn)
     if x.get_n_concat() == 1 and x.get_n_type(0) == minc2_xfm.MINC2_XFM_LINEAR:
         raise ValueError("Transform is linear, not non-linear")
@@ -182,7 +211,83 @@ def load_nl_xfm(fn):
 
 def load_lin_xfm(fn):
     """Load a linear-only transform from a .xfm file."""
+    _require_minc2()
     x = minc2_xfm(fn)
     if x.get_n_concat() == 1 and x.get_n_type(0) == minc2_xfm.MINC2_XFM_LINEAR:
         return np.asmatrix(x.get_linear_transform())
     raise ValueError("Transform is not purely linear")
+
+
+# ---------------------------------------------------------------------------
+# Format-agnostic entry points -- dispatch on filename extension between the
+# MINC2 backend above and the NIfTI backend in ``sr.minc.nifti``. Prefer
+# these from CLI code; use the ``*_minc_volume*`` functions directly only
+# when MINC is genuinely required (e.g. reading a .xfm's grid file).
+# ---------------------------------------------------------------------------
+
+def _is_nifti(fname) -> bool:
+    name = str(fname).lower()
+    return any(name.endswith(suffix) for suffix in _NIFTI_SUFFIXES)
+
+
+def _is_minc(fname) -> bool:
+    return str(fname).lower().endswith(_MINC_SUFFIX)
+
+
+def _unsupported_extension(fname):
+    return ValueError(
+        f"Unrecognised volume file extension for {str(fname)!r}; expected "
+        f"one of {_MINC_SUFFIX}, {', '.join(_NIFTI_SUFFIXES)}")
+
+
+def load_volume(fname, as_byte=False):
+    """Load a volume and return (data_tensor, voxel_to_world_matrix).
+
+    Dispatches on ``fname``'s extension: ``.mnc`` to :func:`load_minc_volume`,
+    ``.nii``/``.nii.gz`` to ``sr.minc.nifti.load_nifti_volume``.
+    """
+    if _is_nifti(fname):
+        from .nifti import load_nifti_volume
+        return load_nifti_volume(fname, as_byte=as_byte)
+    if _is_minc(fname):
+        return load_minc_volume(fname, as_byte=as_byte)
+    raise _unsupported_extension(fname)
+
+
+def load_volume_np(fname, as_byte=False, dtype=None):
+    """Load a volume into a numpy array and return (data, voxel_to_world_matrix).
+
+    Dispatches on ``fname``'s extension: ``.mnc`` to
+    :func:`load_minc_volume_np`, ``.nii``/``.nii.gz`` to
+    ``sr.minc.nifti.load_nifti_volume_np``.
+    """
+    if _is_nifti(fname):
+        from .nifti import load_nifti_volume_np
+        return load_nifti_volume_np(fname, as_byte=as_byte, dtype=dtype)
+    if _is_minc(fname):
+        return load_minc_volume_np(fname, as_byte=as_byte, dtype=dtype)
+    raise _unsupported_extension(fname)
+
+
+def save_volume(fn, data, aff, ref_fname=None, history=None):
+    """Save a numpy array or tensor as a volume file.
+
+    Dispatches on ``fn``'s extension: ``.mnc`` to :func:`save_minc_volume`,
+    ``.nii``/``.nii.gz`` to ``sr.minc.nifti.save_nifti_volume``. ``ref_fname``
+    is only forwarded when it is the same format as ``fn`` -- MINC's
+    ``copy_metadata`` needs an actual MINC reference, and a NIfTI reference
+    would otherwise crash a MINC save (or silently mean nothing to a NIfTI
+    one) on a cross-format conversion.
+    """
+    if _is_nifti(fn):
+        from .nifti import save_nifti_volume
+        if ref_fname is not None and not _is_nifti(ref_fname):
+            ref_fname = None
+        return save_nifti_volume(fn, data, aff, ref_fname=ref_fname,
+                                 history=history)
+    if _is_minc(fn):
+        if ref_fname is not None and not _is_minc(ref_fname):
+            ref_fname = None
+        return save_minc_volume(fn, data, aff, ref_fname=ref_fname,
+                                history=history)
+    raise _unsupported_extension(fn)

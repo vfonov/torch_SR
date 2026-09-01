@@ -18,6 +18,11 @@ implement the same `nlm_upsample()`:
   the offset search with `avg_pool3d` instead of looping per voxel;
   `noise_estimate.py`, `dwt.py`; `optimize.py` is an **experimental** Adam method,
   slower and not better in PSNR — not selected by default.
+- `upsample/sr_numpy/` — **experimental** torch-free NumPy port of the
+  `sr_pytorch` *denoising* path only (`regularize`, `noise_estimate`, `dwt`, the
+  two `core` noise-level helpers); no SR pipeline. Backs `denoise.py --backend
+  numpy` (CPU / `float64` only). Oracle: `sr_pytorch` on CPU — kept in step by
+  `tests/test_numpy_backend.py`.
 - `upsample/_legacy/` — vendored EZminc sources + `build_legacy.py`. An oracle for
   `sr_pytorch.noise_estimate` and `sr_pytorch.dwt` **only** — deliberately *not* an
   oracle for the NLM filter (EZminc shares the first voxel's sigma per pair; this
@@ -53,7 +58,7 @@ requires it.
 There is **no CI workflow and no black/flake8/mypy config** in this repo. Match
 the surrounding code's style and run `pytest tests/` before committing.
 
-## MINC2 I/O
+## MINC2 (and optional NIfTI) I/O
 
 All file I/O goes through `sr.minc.io`:
 
@@ -62,6 +67,7 @@ from sr.minc.io import (
     load_minc_volume,       # -> (torch.Tensor [Z,Y,X], np.matrix 4x4 voxel->world)
     load_minc_volume_np,    # numpy variant; as_byte / dtype args
     save_minc_volume,       # (fn, data, aff, ref_fname=None, history=None)
+    load_volume, load_volume_np, save_volume,  # same, dispatched by extension
     format_history,
     resample_volume, uniformize_volume,   # scipy-backed regridding — reuse these
 )
@@ -71,6 +77,16 @@ from sr.minc.io import (
 always **Z → Y → X** (numpy C-order, slowest to fastest). Volume tensors are
 `(D, H, W)`, or `(N, C, D, H, W)` when batching for PyTorch ops. Catch
 `minc2_error` around MINC calls.
+
+**`minc2_simple` and `nibabel` are both optional.** `sr.minc.io` and
+`sr.minc.nifti` guard their imports (`_HAVE_MINC2`/`_HAVE_NIBABEL`) so
+importing either module — and therefore any CLI — succeeds with neither
+package installed; only a function that actually needs one raises a clear
+`ImportError` naming it. Prefer `load_volume`/`load_volume_np`/`save_volume`
+in CLI code: they pick the backend from the filename's extension (`.mnc` vs
+`.nii`/`.nii.gz`) so a script doesn't have to. Adding the equivalent guard
+(`_require_xxx()`, called first thing in every function touching the
+optional import) is required for any new function added to either module.
 
 ## Conventions
 
@@ -91,7 +107,12 @@ always **Z → Y → X** (numpy C-order, slowest to fastest). Volume tensors are
   volumes from `tests/data/`), `legacy_output` (recorded EZminc oracle).
 - Regenerate fixtures with `tests/regenerate_reference.py` (EZminc oracle) and
   `scripts/generate_test_blocks.py` (`data/psnr_factor_*.npz`).
-  `scripts/benchmark_sr.py` compares `c` vs `pytorch` PSNR and wall time.
+  `scripts/benchmark_sr.py` compares `c` vs `pytorch` PSNR and wall time;
+  `scripts/benchmark_denoise.py` times one `regularize` pass across the `c` /
+  `pytorch` (CPU+CUDA) / `numpy` backends on a shared volume, `c` as the
+  reference column, interior-only Δ (its `run_all` is reused by
+  `tests/test_denoise_benchmark.py`). It defaults to `--factors 2 2 2` because
+  the C wrapper has no `mean_preserve=False` and is the identity at `1 1 1`.
 
 ## Gotchas
 

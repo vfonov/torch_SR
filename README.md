@@ -42,13 +42,14 @@ repository-wide license, only per-file and per-algorithm notices.
 | `legacy/demo/NLMUpsample/` | Original Matlab/MEX reference: `NLMUpsample2.m` (top-level driver), `BSplineInterpolation.m`, `cMRegularizarNLM3D_V2.c` (the C MEX kernel). Read-only. |
 | `legacy/demo/denoising/` | Unrelated reference/demo code from the same author distribution: `ANLM3D.m`, `MBONLM3D.c` (blockwise NLM denoising), and `wavelet/` (3-D wavelet sub-band mixing). Not used by this project's pipeline. |
 | `legacy/demo/test3D.m`, `test3Dnoisy.m`, `testReal.m` | Matlab demo/test drivers for the original code, with accompanying sample data (`T2LR.hdr`/`.img`, `t1_icbm_normal_1mm_pn0_rf0.rawb`). |
-| `upsample/sr/` | C-backed implementation. `nlm_core.c`/`.h` is a MEX-free CFFI port of `cMRegularizarNLM3D_V2.c`; `core.py` is the full `nlm_upsample()` pipeline; `interpolate.py` is the spline initial interpolation shared with the PyTorch path; `regularize.py` is the CFFI wrapper; `metrics.py` computes PSNR; `minc/` holds MINC2 I/O and affine geometry helpers. |
+| `upsample/sr/` | C-backed implementation. `nlm_core.c`/`.h` is a MEX-free CFFI port of `cMRegularizarNLM3D_V2.c`; `core.py` is the full `nlm_upsample()` pipeline; `interpolate.py` is the spline initial interpolation shared with the PyTorch path; `regularize.py` is the CFFI wrapper; `metrics.py` computes PSNR; `minc/` holds MINC2 I/O and affine geometry helpers, plus optional NIfTI I/O (`nifti.py`, needs `nibabel`) dispatched to by extension from `io.py`. |
 | `upsample/sr_pytorch/` | Pure-PyTorch, GPU-capable reimplementation. `core.py` is a drop-in `nlm_upsample()` replacement; `regularize.py` is the vectorized NLM kernel; `optimize.py` is an experimental Adam-based alternative; `noise_estimate.py` is a Rician/Gaussian noise-level estimator; `dwt.py` is a one-level 3-D Daubechies-4 discrete wavelet transform used by the noise estimator. |
+| `upsample/sr_numpy/` | **Experimental** torch-free NumPy port of `sr_pytorch`'s *denoising* path only (`regularize.py`, `noise_estimate.py`, `dwt.py`, the two `core.py` noise-level helpers) — no super-resolution pipeline. Backs `denoise.py --backend numpy`; CPU / `float64` only, numerically matching the `sr_pytorch` CPU path (`tests/test_numpy_backend.py`). |
 | `upsample/_legacy/ezminc/` | Vendored EZminc CFFI sources (`mincnlm`, `minc_anlm`, `noise_estimate`), built via `build_legacy.py` into `_ezminclegacy`/`_ezminc_anlm`. Used only to validate `sr_pytorch.noise_estimate` and `sr_pytorch.dwt` against a byte-level oracle — explicitly **not** an oracle for this project's own NLM filter, which follows a different convention (each voxel's own local sigma vs. EZminc's shared first-voxel sigma per pair). See `upsample/_legacy/ezminc/README.md`. |
 | `upsample/_legacy/compat/` | Stand-in headers (`volume_io.h`, `time_stamp.h`, `ParseArgv.h`) letting the vendored EZminc sources build without the full MINC toolkit. |
-| `upsample/tests/` | pytest suite: `test_interpolate.py` (no C extension needed), `test_regularize.py`/`test_core.py` (need the C extension), `test_pytorch.py`/`test_pytorch_regularize.py`/`test_denoise.py` (the PyTorch path), `test_dwt.py`/`test_noise_estimate.py`/`test_ezminc_backend.py` (checked against the EZminc oracle), `test_psnr.py`. `reference.py`/`regenerate_reference.py` record EZminc program outputs into `tests/reference/legacy_ezminc.{npz,json}`. |
+| `upsample/tests/` | pytest suite: `test_interpolate.py` (no C extension needed), `test_regularize.py`/`test_core.py` (need the C extension), `test_pytorch.py`/`test_pytorch_regularize.py`/`test_denoise.py` (the PyTorch path), `test_numpy_backend.py` (the `sr_numpy` port vs. the `sr_pytorch` CPU path), `test_denoise_benchmark.py` (cross-backend denoise timing/agreement), `test_dwt.py`/`test_noise_estimate.py`/`test_ezminc_backend.py` (checked against the EZminc oracle), `test_psnr.py`. `reference.py`/`regenerate_reference.py` record EZminc program outputs into `tests/reference/legacy_ezminc.{npz,json}`. |
 | `upsample/data/` | PSNR regression fixtures: `psnr_factor_{2,3,5,7}.npz`. |
-| `upsample/scripts/` | `benchmark_sr.py` (C vs. PyTorch backend timing/PSNR), `generate_test_blocks.py` (regenerates the `data/*.npz` fixtures), `nlm_upsample.py` (an earlier copy of the top-level upsampling CLI). |
+| `upsample/scripts/` | `benchmark_sr.py` (C vs. PyTorch backend timing/PSNR), `benchmark_denoise.py` (one `regularize` pass timed across the `c` / `pytorch` (CPU+CUDA) / `numpy` backends on one shared volume, `c` as reference, interior-only max abs difference; defaults to `--factors 2 2 2` since the C wrapper is the identity at `1 1 1`), `generate_test_blocks.py` (regenerates the `data/*.npz` fixtures), `nlm_upsample.py` (an earlier copy of the top-level upsampling CLI). |
 | `minc2-simple/` | Git submodule providing MINC2 volume I/O and PyTorch spatial-transform examples (`USAGE.md`, `example/python/`). |
 | `AGENTS.md` | Development conventions: directory layout, build/test commands, MINC2 I/O patterns, code style, logging, CI requirements. |
 | `research.md` | Detailed technical notes: coordinate conventions, the C kernel's memory layout, algorithm steps, convergence logic, the CFFI build, the MINC2 API, and a fuller CLI/test reference. Its directory diagram predates the project being nested under `torch_SR/` and shows paths without that prefix. |
@@ -113,9 +114,18 @@ method and the standalone denoising/regularization/noise-estimation CLIs
 work without the C extension; `--method c` (or its default selection when
 the extension is present) requires it.
 
+Both volume I/O backends are optional and independent: `sr.minc.io` and its
+CLIs import cleanly without either installed, and only fail — with a clear
+message — when you actually try to load or save the corresponding format.
+`minc2_simple` (`.mnc`) is installed as above; NIfTI (`.nii`/`.nii.gz`)
+support needs `pip install nibabel`, not listed in `requirements.txt`
+since it's optional in the same way.
+
 ## Usage
 
-All commands are run from `upsample/` and operate on MINC2 (`.mnc`) volumes.
+All commands are run from `upsample/` and operate on MINC2 (`.mnc`) or,
+with `nibabel` installed, NIfTI (`.nii`/`.nii.gz`) volumes — chosen by file
+extension, no flag needed.
 
 **`upsample.py`** — full super-resolution pipeline:
 
@@ -130,7 +140,7 @@ built, else `pytorch`), `--v`/`--f` (search radius / patch half-size),
 (spline interpolation only, no NLM), `--device`, `--n-steps`/`--lr` (for
 `--method optimize`), `--verbose`.
 
-**`denoise.py`** — single NLM pass, exposing `sr_pytorch.regularize.regularize`
+**`denoise.py`** — single NLM pass, exposing the `regularize` kernel
 directly: plain denoising by default, or regularization of an already
 spline-interpolated volume when given `--factors`:
 
@@ -155,6 +165,11 @@ automatically whenever they are not `1 1 1`, and `--no-mean-preserve` forces
 it off. Combining `--mean-preserve` with `--factors 1 1 1` is rejected: every
 block would be a single voxel, so the correction would restore the input
 exactly and discard the filtering pass.
+
+`--backend pytorch` (default) uses `sr_pytorch` and honours `--device` /
+`--dtype`. `--backend numpy` selects the **experimental** torch-free
+`sr_numpy` path — CPU / `float64` only (`--device` / `--dtype` are rejected),
+numerically matching the PyTorch CPU path.
 
 **`noise_estimate.py`** — Rician/Gaussian noise-level or SNR estimate:
 

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-NLM super-resolution upsampling for MINC2 volumes.
+NLM super-resolution upsampling for MINC2 (and, optionally, NIfTI) volumes.
 
 Usage
 -----
     python upsample/upsample.py input.mnc output.mnc [options]
+
+Input/output format is chosen by extension: ``.mnc`` (needs
+``minc2_simple``) or ``.nii``/``.nii.gz`` (needs the optional ``nibabel``
+package -- ``pip install nibabel``). See ``sr.minc.io``.
 
 Example — upsample only along Z (slice direction) by a factor of 2::
 
@@ -32,8 +36,8 @@ def _parse_args() -> argparse.Namespace:
         description="NLM super-resolution upsampling (Manjon 2010)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("input",  type=Path, help="Input MINC2 file (.mnc)")
-    p.add_argument("output", type=Path, help="Output MINC2 file (.mnc)")
+    p.add_argument("input",  type=Path, help="Input volume (.mnc, .nii, .nii.gz)")
+    p.add_argument("output", type=Path, help="Output volume (.mnc, .nii, .nii.gz)")
     p.add_argument(
         "--factors",
         nargs=3,
@@ -156,13 +160,9 @@ def main() -> None:
 
     # ---- I/O imports ---------------------------------------------------
     try:
-        from sr.minc.io import format_history, load_minc_volume, save_minc_volume
+        from sr.minc.io import format_history, load_volume, save_volume
     except ImportError as exc:
-        sys.exit(
-            f"ERROR: Could not import MINC I/O helpers.\n"
-            f"Install minc2_simple:  pip install -e minc2-simple/python/\n"
-            f"Detail: {exc}"
-        )
+        sys.exit(f"ERROR: Could not import I/O helpers: {exc}")
 
     # ---- resolve backend ----------------------------------------------
     from sr.regularize import have_c_ext
@@ -201,7 +201,7 @@ def main() -> None:
     # ---- Load ---------------------------------------------------------
     print(f"Loading {args.input}")
     try:
-        data, v2w = load_minc_volume(str(args.input))
+        data, v2w = load_volume(str(args.input))
     except Exception as exc:
         sys.exit(f"ERROR loading {args.input}: {exc}")
 
@@ -256,7 +256,7 @@ def main() -> None:
     # ---- Save ---------------------------------------------------------
     print(f"Saving {args.output}")
     try:
-        save_minc_volume(
+        save_volume(
             str(args.output),
             hr,
             np.asmatrix(v2w_hr),
